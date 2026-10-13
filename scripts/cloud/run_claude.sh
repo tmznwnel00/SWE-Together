@@ -19,6 +19,29 @@ if ! docker info >/dev/null 2>&1; then
 fi
 docker info >/dev/null 2>&1 || { echo "docker daemon did not start (see /tmp/dockerd.log)"; exit 1; }
 
+# 1b. The session's proxy re-signs HTTPS with its own CA: the task containers must trust it, or the in-container installs
+#     (curl: "self-signed certificate in certificate chain") fail before the agent starts. Same overlay mechanism as the
+#     local corporate-proxy setup: swet_cli picks up ~/.metaharness/bench/{ca-bundle.pem,swet-ca.yaml} and passes the overlay
+#     to Harbor (HARBOR_EXTRA_COMPOSE).
+CA_SRC=${CA_BUNDLE:-/root/.ccr/ca-bundle.crt}
+if [ -f "$CA_SRC" ]; then
+  mkdir -p "$HOME/.metaharness/bench"
+  { [ -f /etc/ssl/certs/ca-certificates.crt ] && cat /etc/ssl/certs/ca-certificates.crt; cat "$CA_SRC"; } > "$HOME/.metaharness/bench/ca-bundle.pem"
+  cat > "$HOME/.metaharness/bench/swet-ca.yaml" <<YAML
+services:
+  main:
+    volumes:
+      - $HOME/.metaharness/bench/ca-bundle.pem:/etc/ssl/certs/metaharness-ca-bundle.pem:ro
+    environment:
+      SSL_CERT_FILE: /etc/ssl/certs/metaharness-ca-bundle.pem
+      CURL_CA_BUNDLE: /etc/ssl/certs/metaharness-ca-bundle.pem
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/metaharness-ca-bundle.pem
+YAML
+  echo "proxy CA bundle installed for the containers ($CA_SRC)"
+else
+  echo "no proxy CA bundle at $CA_SRC (set CA_BUNDLE=... if it lives elsewhere)"
+fi
+
 # 2. The benchmark. In the fork (this repo IS the benchmark with the local changes) nothing to do; next to the Meta-Harness
 #    repo it is cloned at the commit the patches were made against, and the patches are applied.
 if [ -f src/run_eval.py ]; then
