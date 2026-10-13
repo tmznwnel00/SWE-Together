@@ -27,4 +27,11 @@ if [ -n "${HTTPS_PROXY:-${https_proxy:-}}" ]; then
   P=${HTTPS_PROXY:-$https_proxy}
   probe "container, bridge + proxy env passed in" $CAARGS -e HTTPS_PROXY="$P" -e HTTP_PROXY="$P" -e https_proxy="$P" -e http_proxy="$P"
   probe "container, --network host + proxy env passed in" --network host $CAARGS -e HTTPS_PROXY="$P" -e HTTP_PROXY="$P" -e https_proxy="$P" -e http_proxy="$P"
+  # bridge network + relay: the proxy listens on 127.0.0.1, so a relay on 0.0.0.0 makes it reachable from a bridge container
+  HERE=$(cd "$(dirname "$0")" && pwd)
+  nohup python3 "$HERE/proxy_relay.py" "$P" 42226 >/tmp/proxy_relay_diag.log 2>&1 &
+  RP=$!; sleep 1
+  R=$(python3 "$HERE/proxy_relay.py" --rewrite "$P" host.docker.internal 42226)
+  probe "container, bridge + relay (CLOUD_NET=relay)" $CAARGS --add-host host.docker.internal:host-gateway -e HTTPS_PROXY="$R" -e HTTP_PROXY="$R" -e https_proxy="$R" -e http_proxy="$R" -e NO_PROXY=localhost,127.0.0.1
+  kill $RP 2>/dev/null
 fi

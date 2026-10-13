@@ -19,27 +19,46 @@ if ! docker info >/dev/null 2>&1; then
 fi
 docker info >/dev/null 2>&1 || { echo "docker daemon did not start (see /tmp/dockerd.log)"; exit 1; }
 
-# 1b. The session's proxy re-signs HTTPS with its own CA: the task containers must trust it, or the in-container installs
-#     (curl: "self-signed certificate in certificate chain") fail before the agent starts. Same overlay mechanism as the
-#     local corporate-proxy setup: swet_cli picks up ~/.metaharness/bench/{ca-bundle.pem,swet-ca.yaml} and passes the overlay
-#     to Harbor (HARBOR_EXTRA_COMPOSE).
+# 1b. The session reaches the internet through a proxy that (a) re-signs HTTPS with its own CA and (b) listens on 127.0.0.1 and
+#     resolves host names itself. A task container on a bridge network trusts neither the CA nor can it reach that proxy, so the
+#     in-container installs (claude.ai / downloads.claude.ai) fail before the agent starts. Fix = a Harbor compose overlay
+#     (HARBOR_EXTRA_COMPOSE, picked up by swet_cli from ~/.metaharness/bench/swet-ca.yaml) that gives the containers the CA and the proxy.
+#     CLOUD_NET=relay (default): containers stay on the bridge network and reach the proxy through scripts/cloud/proxy_relay.py.
+#     CLOUD_NET=host: containers share the host network (verified by diagnose_net.sh, but parallel tasks share ports).
 CA_SRC=${CA_BUNDLE:-/root/.ccr/ca-bundle.crt}
-if [ -f "$CA_SRC" ]; then
+UP=${HTTPS_PROXY:-${https_proxy:-}}
+CLOUD_NET=${CLOUD_NET:-relay}
+if [ -f "$CA_SRC" ] || [ -n "$UP" ]; then
   mkdir -p "$HOME/.metaharness/bench"
-  { [ -f /etc/ssl/certs/ca-certificates.crt ] && cat /etc/ssl/certs/ca-certificates.crt; cat "$CA_SRC"; } > "$HOME/.metaharness/bench/ca-bundle.pem"
-  cat > "$HOME/.metaharness/bench/swet-ca.yaml" <<YAML
-services:
-  main:
-    volumes:
-      - $HOME/.metaharness/bench/ca-bundle.pem:/etc/ssl/certs/metaharness-ca-bundle.pem:ro
-    environment:
-      SSL_CERT_FILE: /etc/ssl/certs/metaharness-ca-bundle.pem
-      CURL_CA_BUNDLE: /etc/ssl/certs/metaharness-ca-bundle.pem
-      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/metaharness-ca-bundle.pem
-YAML
-  echo "proxy CA bundle installed for the containers ($CA_SRC)"
+  OV="$HOME/.metaharness/bench/swet-ca.yaml"
+  { echo "services:"; echo "  main:"; } > "$OV"
+  if [ -f "$CA_SRC" ]; then
+    { [ -f /etc/ssl/certs/ca-certificates.crt ] && cat /etc/ssl/certs/ca-certificates.crt; cat "$CA_SRC"; } > "$HOME/.metaharness/bench/ca-bundle.pem"
+    { echo "    volumes:"; echo "      - $HOME/.metaharness/bench/ca-bundle.pem:/etc/ssl/certs/metaharness-ca-bundle.pem:ro"; } >> "$OV"
+  fi
+  PROXY_IN_CONTAINER=""
+  if [ -n "$UP" ]; then
+    if [ "$CLOUD_NET" = host ]; then
+      echo "    network_mode: host" >> "$OV"; PROXY_IN_CONTAINER="$UP"
+    else
+      RELAY_PORT=42224
+      nohup python3 scripts/cloud/proxy_relay.py "$UP" "$RELAY_PORT" >/tmp/proxy_relay.log 2>&1 &
+      echo '    extra_hosts: ["host.docker.internal:host-gateway"]' >> "$OV"
+      PROXY_IN_CONTAINER=$(python3 scripts/cloud/proxy_relay.py --rewrite "$UP" host.docker.internal "$RELAY_PORT")
+    fi
+  fi
+  echo "    environment:" >> "$OV"
+  if [ -f "$CA_SRC" ]; then
+    for v in SSL_CERT_FILE CURL_CA_BUNDLE NODE_EXTRA_CA_CERTS; do echo "      $v: /etc/ssl/certs/metaharness-ca-bundle.pem" >> "$OV"; done
+  fi
+  if [ -n "$PROXY_IN_CONTAINER" ]; then
+    for v in HTTPS_PROXY HTTP_PROXY https_proxy http_proxy; do echo "      $v: \"$PROXY_IN_CONTAINER\"" >> "$OV"; done
+    for v in NO_PROXY no_proxy; do echo "      $v: \"localhost,127.0.0.1\"" >> "$OV"; done
+    echo '      CLAUDE_CODE_PROXY_RESOLVES_HOSTS: "true"' >> "$OV"
+  fi
+  echo "container network overlay written (CLOUD_NET=$CLOUD_NET, proxy=$([ -n "$UP" ] && echo yes || echo no), CA=$([ -f "$CA_SRC" ] && echo yes || echo no))"
 else
-  echo "no proxy CA bundle at $CA_SRC (set CA_BUNDLE=... if it lives elsewhere)"
+  echo "no proxy and no CA bundle found: containers keep the default network"
 fi
 
 # 2. The benchmark. In the fork (this repo IS the benchmark with the local changes) nothing to do; next to the Meta-Harness
