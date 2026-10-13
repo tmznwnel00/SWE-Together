@@ -47,11 +47,18 @@ def _normalize(r: dict) -> dict | None:
             "frustration": int(bool(r.get("frustration")))}
 
 
-async def _ask(llm, system: str, user: str, attempts: int = 3) -> dict:
-    """One judge call → {trial_idx: raw_row}. Retries transient parse/API failures."""
+async def _ask(llm, system: str, user: str, attempts: int = 3, usage: dict | None = None) -> dict:
+    """One judge call → {trial_idx: raw_row}. Retries transient parse/API failures.
+    [metaharness] every attempt's tokens/$ are summed into `usage` (retries are billed too)."""
     for att in range(attempts):
         try:
             resp = await llm.call(system + "\n\n" + user)
+            u = getattr(resp, "usage", None)
+            if usage is not None and u is not None:
+                usage["calls"] = usage.get("calls", 0) + 1
+                usage["prompt_tokens"] = usage.get("prompt_tokens", 0) + (u.prompt_tokens or 0)
+                usage["completion_tokens"] = usage.get("completion_tokens", 0) + (u.completion_tokens or 0)
+                usage["cost_usd"] = round(usage.get("cost_usd", 0.0) + (u.cost_usd or 0.0), 6)
             obj = parse_json(resp.content)
             return {r["trial_idx"]: r for r in obj.get("results", [])
                     if isinstance(r, dict) and isinstance(r.get("trial_idx"), int)}
@@ -61,7 +68,7 @@ async def _ask(llm, system: str, user: str, attempts: int = 3) -> dict:
             await asyncio.sleep(4)
 
 
-async def tag_one(llm, trial_dir: Path, task_dir: Path | None) -> list[dict]:
+async def tag_one(llm, trial_dir: Path, task_dir: Path | None, usage: dict | None = None) -> list[dict]:
     """Tag every (non-instruction) sim message of one trial: one judge call →
     {tags, frustration} per message."""
     sim = load_trial_sim_msgs(trial_dir, task_dir)
@@ -69,7 +76,7 @@ async def tag_one(llm, trial_dir: Path, task_dir: Path | None) -> list[dict]:
     if not msgs:
         return []
     user = _build_user(msgs)
-    tag_rows = await _ask(llm, TAG_SYS, user)     # {trial_idx: {tags, frustration}}
+    tag_rows = await _ask(llm, TAG_SYS, user, usage=usage)     # {trial_idx: {tags, frustration}}
     rows = []
     for m in msgs:
         i = m["trial_idx"]
@@ -101,11 +108,13 @@ async def _tag_into_verdict(llm, sem, vp: str, force: bool):
             v = {}
         if v.get("trial_msg_tags") and not force:
             return "skip"
+        usage: dict = {}
         try:
-            rows = await tag_one(llm, *_resolve_dirs(vp, v))
+            rows = await tag_one(llm, *_resolve_dirs(vp, v), usage=usage)
         except Exception as e:
             return f"err: {type(e).__name__}: {e}"[:160]
         v["trial_msg_tags"] = rows
+        v["tag_usage"] = usage or None
         m = kg.metrics_from_rows(rows)          # persist the derived User Correction metric
         v["user_correction"] = m["user_correction"]
         v.pop("user_effort", None)             # drop legacy effort field if present
@@ -121,6 +130,11 @@ async def run_batch(trials_roots, model=DEFAULT_MODEL, workers=50, force=False):
     vps = sorted(p for root in trials_roots
                  for p in glob.glob(f"{root}/*/intent_coverage_verdict.json"))
     llm = _make_llm(model, 0.0)
+    try:  # [metaharness] ledger of labeling spend, kept apart from the coding agent
+        from metaharness.bench import swet_ledger
+        swet_ledger.install("tagger")
+    except ImportError:
+        pass
     sem = asyncio.Semaphore(workers)
     print(f"tagging {len(vps)} trials with {model}, workers={workers}", flush=True)
     res = {}

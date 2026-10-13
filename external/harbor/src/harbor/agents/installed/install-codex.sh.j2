@@ -12,34 +12,21 @@ if ldd --version 2>&1 | grep -qi musl || [ -f /etc/alpine-release ]; then
     npm install -g @openai/codex@0.117.0
     {% endif %}
 else
-    # glibc system — use NVM
-    # Install curl
-    if command -v apt-get &>/dev/null; then
-        apt-get update && apt-get install -y curl ripgrep
-    elif command -v yum &>/dev/null; then
-        yum install -y curl ripgrep
-    elif command -v apk &>/dev/null; then
-        apk add --no-cache curl bash ripgrep
-    else
-        echo "Warning: No known package manager found, assuming curl is available" >&2
+    # [local-run] The task images run as a non-root user and sinkhole github.com / raw.githubusercontent.com,
+    # so the stock apt + nvm path cannot run: Node comes from nodejs.org, Codex from the npm registry, both into $HOME/.local.
+    export PATH="$HOME/.local/bin:$PATH"
+    if ! command -v node &>/dev/null; then
+        case "$(uname -m)" in x86_64) arch=x64;; aarch64|arm64) arch=arm64;; *) arch=x64;; esac
+        f=$(curl -fsSL https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt | grep -oE "node-v[0-9.]+-linux-$arch\.tar\.gz" | head -1)
+        mkdir -p "$HOME/.local"
+        curl -fsSL "https://nodejs.org/dist/latest-v22.x/$f" | tar xz -C "$HOME/.local" --strip-components=1
     fi
-
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
-
-    export NVM_DIR="$HOME/.nvm"
-    # Source nvm with || true to handle nvm.sh's internal non-zero returns
-    \. "$NVM_DIR/nvm.sh" || true
-    # Verify NVM loaded successfully
-    command -v nvm &>/dev/null || { echo "Error: NVM failed to load" >&2; exit 1; }
-
-    nvm install 22
-    nvm alias default 22
     npm -v
 
     {% if version %}
-    npm install -g @openai/codex@{{ version }}
+    npm install -g --prefix "$HOME/.local" @openai/codex@{{ version }}
     {% else %}
-    npm install -g @openai/codex@0.117.0
+    npm install -g --prefix "$HOME/.local" @openai/codex@0.117.0
     {% endif %}
 fi
 
@@ -48,7 +35,7 @@ fi
 # Skip if already in /usr/local/bin (e.g. Alpine's apk puts them there).
 for bin in node codex; do
     BIN_PATH="$(which "$bin")"
-    if [ "$BIN_PATH" != "/usr/local/bin/$bin" ]; then
+    if [ "$BIN_PATH" != "/usr/local/bin/$bin" ] && [ -w /usr/local/bin ]; then
         ln -sf "$BIN_PATH" "/usr/local/bin/$bin"
     fi
 done

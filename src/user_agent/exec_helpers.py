@@ -86,3 +86,82 @@ async def exec_with_budget(environment, exec_input, *, start_time: float):
         )
         log.warning(msg)
         return _TimeoutResult(stderr=msg), True
+    except RuntimeError as exc:
+        # [metaharness] Harbor's LOCAL DOCKER environment enforces `timeout_sec` itself and raises this, at cap_sec,
+        # before the wait_for above (cap_sec + 30) can fire. Uncaught, it killed the whole trial instead of being
+        # cap-rescued like on E2B. Treat it as the same timeout. The exec'd process keeps running inside the
+        # container (only the docker client is terminated): the caller must stop it before the next turn.
+        if not str(exc).startswith("Command timed out after"):
+            raise
+        msg = f"[wrapper] exec capped at {cap_sec}s by the docker environment (trial budget remaining {int(remaining)}s) — abandoning call"
+        log.warning(msg)
+        try:      # the CLI keeps running inside the container: stop it so the cap-rescue resume does not race it
+            await asyncio.wait_for(environment.exec(command="pkill -f '[c]laude --verbose'; pkill -f '[c]odex exec'; true", timeout_sec=20), timeout=40)
+        except Exception:
+            pass
+        return _TimeoutResult(stderr=msg), True
+
+
+# ── [local-run] subscription quota wait ──────────────────────────────────────────────────────────────
+# The stock wrappers have no answer to a subscription limit: the turn "succeeds" with a limit message and the
+# simulator then talks to nothing. This waits for the reset and runs the same command again. Claude and Codex
+# are separate: a Claude limit holds only Claude trials, a Codex limit only Codex trials. Time spent waiting is
+# added back to the agent's start_time so it does not eat the 90-minute trial budget.
+_NATIVE_QUOTA_MAX_TRIES = 40
+
+
+def _native_harness(command: str) -> str | None:
+    if "claude " in command and "--output-format" in command:
+        return "claude-code"
+    if "codex exec" in command:
+        return "codex"
+    return None
+
+
+async def exec_with_quota_wait(agent, environment, exec_input):
+    """exec_with_budget + wait-for-reset on a subscription limit. `agent._start_time` is shifted by the wait."""
+    try:
+        from metaharness.bench.swet_quota import detect_limit, wait_seconds
+    except ImportError:          # Meta-Harness repo not on PYTHONPATH: stock behaviour
+        return await exec_with_budget(environment, exec_input, start_time=agent._start_time)
+    harness = _native_harness(exec_input.command)
+    ctl = os.path.expanduser("~/.metaharness/bench/control")
+    block = os.path.join(ctl, f"NATIVE_BLOCK_{harness}") if harness else None
+    for attempt in range(_NATIVE_QUOTA_MAX_TRIES):
+        if block and os.path.exists(block):          # another trial already hit this harness's limit
+            try:
+                until = float(open(block).read().strip())
+            except (OSError, ValueError):
+                until = 0.0
+            if until > time.time():
+                await _quota_sleep(agent, until - time.time(), harness, "waiting (shared)")
+        result, timed_out = await exec_with_budget(environment, exec_input, start_time=agent._start_time)
+        hit = None if timed_out or not harness else detect_limit(result.stdout or "", harness)
+        if hit is None:
+            return result, timed_out
+        wait = wait_seconds(hit, attempt)
+        os.makedirs(ctl, exist_ok=True)
+        until = time.time() + wait
+        try:
+            prev = float(open(block).read().strip()) if os.path.exists(block) else 0.0
+        except (OSError, ValueError):
+            prev = 0.0
+        open(block, "w").write(str(max(until, prev)))
+        log.warning("%s subscription limit hit (%s): waiting %.0f min then running the turn again", harness, hit.window or "?", wait / 60)
+        await _quota_sleep(agent, wait, harness, "limit hit")
+    return result, timed_out
+
+
+async def _quota_sleep(agent, seconds: float, harness: str, why: str) -> None:
+    t0 = time.monotonic()
+    await asyncio.sleep(max(seconds, 0))
+    waited = time.monotonic() - t0
+    agent._start_time += waited                  # waiting is not agent work: keep the trial budget intact
+    total = getattr(agent, "_quota_wait_s", 0.0) + waited
+    agent._quota_wait_s = total
+    try:
+        import json
+        with open(os.path.join(agent.logs_dir, "quota_wait.json"), "w") as f:
+            json.dump({"harness": harness, "total_wait_s": round(total), "last": why}, f)
+    except OSError:
+        pass

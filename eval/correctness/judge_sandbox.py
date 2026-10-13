@@ -34,6 +34,9 @@ def check_backend_prereqs(backend: str) -> str | None:
         if not os.environ.get("E2B_API_KEY"):
             return "E2B_API_KEY not set (or choose SWT_SANDBOX=enroot / JUDGE_SANDBOX=enroot)"
         return None
+    if backend == "docker":
+        import shutil
+        return None if shutil.which("docker") else "judge sandbox is docker but `docker` is not on PATH"
     from enroot_backend.runtime import enroot_available
     if not enroot_available():
         return "judge sandbox is enroot but the `enroot` binary is not on PATH"
@@ -176,6 +179,83 @@ class EnrootJudgeSandbox:
         await self._c.remove()
 
 
+# ── docker ────────────────────────────────────────────────────────────────
+
+class DockerJudgeSandbox:
+    """Judge inside a local docker container of the task image (root, internet on).
+
+    ``envs`` (the model auth tuple) is passed per exec as ``-e KEY`` with the value
+    in the docker client's environment, so tokens never appear in argv.
+    ``JUDGE_DOCKER_ARGS`` adds host-specific ``docker run`` args (e.g. a CA bundle mount).
+    """
+
+    def __init__(self, cid: str, envs: dict[str, str]):
+        self._cid = cid
+        self._envs = envs
+        self.sandbox_id: str = cid[:12]
+
+    @staticmethod
+    async def _docker(*args: str, stdin: bytes | None = None, env: dict | None = None,
+                      timeout: float | None = None) -> CmdResult:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", *args, stdin=asyncio.subprocess.PIPE if stdin is not None else None,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, **(env or {})},
+        )
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(stdin), timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return CmdResult("", f"timed out after {timeout}s", 124)
+        return CmdResult(out.decode(errors="replace"), err.decode(errors="replace"), proc.returncode)
+
+    @classmethod
+    async def create(cls, task_name: str, envs: dict[str, str]) -> "DockerJudgeSandbox":
+        import shlex
+
+        from enroot_backend.images import docker_image_for_task
+
+        image = docker_image_for_task(TASKS_DIR / task_name)
+        r = await cls._docker(
+            "run", "-d", "--platform", "linux/amd64", "--entrypoint", "sleep",
+            *shlex.split(os.environ.get("JUDGE_DOCKER_ARGS", "")), image, "infinity",
+            timeout=1800,
+        )
+        if r.exit_code != 0:
+            raise RuntimeError(f"docker run {image} failed: {r.stderr[-500:]}")
+        return cls(r.stdout.strip(), envs)
+
+    async def write(self, path: str, content: str | bytes) -> None:
+        import shlex
+
+        data = content.encode() if isinstance(content, str) else content
+        q = shlex.quote(path)
+        r = await self._docker("exec", "-i", self._cid, "sh", "-c",
+                               f"mkdir -p \"$(dirname {q})\" && cat > {q}", stdin=data, timeout=120)
+        if r.exit_code != 0:
+            raise RuntimeError(f"write {path} failed: {r.stderr[-300:]}")
+
+    async def run(self, cmd: str, *, timeout: int, cwd: str | None = None,
+                  user: str | None = None) -> CmdResult:
+        env = {"IS_SANDBOX": "1", **self._envs}
+        args = ["exec"] + [a for k in env for a in ("-e", k)]
+        if cwd:
+            args += ["-w", cwd]
+        if user:
+            args += ["-u", user]
+        return await self._docker(*args, self._cid, "bash", "-lc", cmd, env=env,
+                                  timeout=float(timeout))
+
+    async def read(self, path: str) -> str:
+        r = await self._docker("exec", self._cid, "cat", path, timeout=120)
+        if r.exit_code != 0:
+            raise FileNotFoundError(f"{path}: {r.stderr[-300:]}")
+        return r.stdout
+
+    async def kill(self) -> None:
+        await self._docker("rm", "-f", self._cid, timeout=120)
+
+
 # ── factory ───────────────────────────────────────────────────────────────
 
 async def open_judge_sandbox(
@@ -189,4 +269,6 @@ async def open_judge_sandbox(
     backend = selected_backend()
     if backend == "enroot":
         return await EnrootJudgeSandbox.create(task_name, envs)
+    if backend == "docker":
+        return await DockerJudgeSandbox.create(task_name, envs)
     return await E2BJudgeSandbox.create(e2b_template, envs, timeout_sec, buffer_sec)

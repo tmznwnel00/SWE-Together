@@ -112,6 +112,11 @@ def discover_jobs(
         for trial in sorted(root.iterdir()):
             if not trial.is_dir() or "__" not in trial.name:
                 continue
+            # [metaharness] a trial still running has no result.json yet but already has a (partial) final.patch: judging it would
+            # freeze a verdict on half a conversation. Only finished trials are judged.
+            if not (trial / "result.json").exists():
+                logger.info("skipping unfinished trial %s (no result.json)", trial.name)
+                continue
             prefix = trial.name.rsplit("__", 1)[0]
             match = next((t for t in task_dirs if t.name == prefix), None)
             if match is None:

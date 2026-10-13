@@ -25,7 +25,7 @@ from harbor.llms.lite_llm import LiteLLM
 
 from ..repo_config import discover_repo_config_files
 from ..user_agent import UserAgent, UserDecision
-from ..exec_helpers import TRIAL_BUDGET_SEC, exec_with_budget
+from ..exec_helpers import TRIAL_BUDGET_SEC, exec_with_budget, exec_with_quota_wait
 
 log = logging.getLogger(__name__)
 
@@ -920,9 +920,7 @@ server.serve_forever()
         turn0_timed_out = False
         try:
             for i, exec_input in enumerate(commands):
-                result, timed_out = await exec_with_budget(
-                    environment, exec_input, start_time=self._start_time,
-                )
+                result, timed_out = await exec_with_quota_wait(self, environment, exec_input)
                 if result.stdout:
                     self._cumulative_output.append(result.stdout)
 
@@ -1005,9 +1003,7 @@ server.serve_forever()
             turn_timed_out = False
             try:
                 for j, exec_input in enumerate(resume_commands):
-                    result, timed_out = await exec_with_budget(
-                        environment, exec_input, start_time=self._start_time,
-                    )
+                    result, timed_out = await exec_with_quota_wait(self, environment, exec_input)
                     if result.stdout:
                         self._cumulative_output.append(result.stdout)
 

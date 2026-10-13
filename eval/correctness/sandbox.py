@@ -296,7 +296,7 @@ async def run_judge(
                 'echo "applied candidate $APPLIED"; '
                 '{ chmod -R a+rwX "$REPO" 2>/dev/null || true; }' % (n_candidates - 1)
             ),
-            timeout=120, user="root",
+            timeout=900, user="root",
         )
         if apply.exit_code != 0:
             return JudgeRunResult(
@@ -328,7 +328,7 @@ async def run_judge(
             log.info("claude-code not in PATH; installing v2.1.108")
             install = await sb.run(
                 "curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.108",
-                timeout=180,
+                timeout=900,   # [metaharness] 180 s timed out under load (3 trials + 4 judges in one VM): 40 judge runs failed on it
             )
             if install.exit_code != 0:
                 return JudgeRunResult(
@@ -609,7 +609,7 @@ if __name__ == "__main__":
             # shell doesn't source ~/.bashrc.
             judge_cmd = (
                 _PATH_PREFIX
-                + f"timeout {timeout_sec} claude --print --max-turns {max_turns} "
+                + f"timeout {timeout_sec} claude --print --output-format json --max-turns {max_turns} "
                 f"--model {claude_model} "
                 f"--dangerously-skip-permissions "
                 f"--setting-sources user "
@@ -652,6 +652,17 @@ if __name__ == "__main__":
                 "judge_stdout_tail": result.stdout[-2000:],
                 "judge_stderr_tail": result.stderr[-2000:],
             }
+        # [metaharness] `--output-format json` => stdout is one result object: keep its usage/cost
+        # so judge spend can be reported apart from the coding agent (subscription = list-price equivalent).
+        try:
+            _jr = json.loads(result.stdout.strip().splitlines()[-1])
+            verdict["judge_usage"] = {
+                "total_cost_usd": _jr.get("total_cost_usd"), "usage": _jr.get("usage"),
+                "modelUsage": _jr.get("modelUsage"), "num_turns": _jr.get("num_turns"),
+                "duration_ms": _jr.get("duration_ms"), "is_error": _jr.get("is_error"),
+            }
+        except Exception:
+            verdict["judge_usage"] = None
         # Provenance: which normalised candidate was applied (repair tooling
         # distinguishes verdicts on the normalised patch from pre-fix ones).
         m_applied = re.search(r"applied candidate (\d+)((?: -[-A-Za-z0-9]+)*)", apply.stdout or "")

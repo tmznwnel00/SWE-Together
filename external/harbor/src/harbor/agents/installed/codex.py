@@ -55,7 +55,7 @@ class Codex(BaseInstalledAgent):
         return PurePosixPath(EnvironmentPaths.agent_dir / "trajectory.json")
 
     def get_version_command(self) -> str | None:
-        return "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; codex --version"
+        return 'export PATH="$HOME/.local/bin:$PATH"; ' "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; codex --version"
 
     def parse_version(self, stdout: str) -> str:
         text = stdout.strip()
@@ -577,7 +577,7 @@ ln -sf /tmp/codex-secrets/auth.json "$CODEX_HOME/auth.json"
             ),
             ExecInput(
                 command=(
-                    "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; "
+                    'export PATH="$HOME/.local/bin:$PATH"; ' "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; "
                     "codex exec "
                     "--dangerously-bypass-approvals-and-sandbox "
                     "--skip-git-repo-check "

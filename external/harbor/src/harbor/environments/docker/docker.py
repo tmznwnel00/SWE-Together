@@ -158,6 +158,10 @@ class DockerEnvironment(BaseEnvironment):
         if self._mounts_compose_path:
             paths.append(self._mounts_compose_path)
 
+        # Host-specific overlay (e.g. a TLS-interception CA bundle) without editing tasks.
+        if extra := os.environ.get("HARBOR_EXTRA_COMPOSE"):
+            paths.append(Path(extra))
+
         if not self.task_env_config.allow_internet:
             paths.append(self._DOCKER_COMPOSE_NO_NETWORK_PATH)
 

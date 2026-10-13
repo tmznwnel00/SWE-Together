@@ -32,7 +32,7 @@ from harbor.models.agent.context import AgentContext
 from harbor.models.trial.paths import EnvironmentPaths
 from harbor.llms.lite_llm import LiteLLM
 
-from ..exec_helpers import TRIAL_BUDGET_SEC, exec_with_budget
+from ..exec_helpers import TRIAL_BUDGET_SEC, exec_with_budget, exec_with_quota_wait
 from ..repo_config import discover_repo_config_files
 from ..repo_diff import capture_git_diff, tag_harbor_base
 from ..user_agent import UserAgent, UserDecision
@@ -320,7 +320,7 @@ class UserEnabledCodex(BaseAgent):
         return [
             ExecInput(
                 command=(
-                    "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; "
+                    'export PATH="$HOME/.local/bin:$PATH"; ' "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; "
                     "codex exec "
                     "--dangerously-bypass-approvals-and-sandbox "
                     "--skip-git-repo-check "
@@ -348,7 +348,7 @@ class UserEnabledCodex(BaseAgent):
         return [
             ExecInput(
                 command=(
-                    "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; "
+                    'export PATH="$HOME/.local/bin:$PATH"; ' "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; "
                     "codex exec "
                     "--dangerously-bypass-approvals-and-sandbox "
                     "--skip-git-repo-check "
@@ -563,9 +563,7 @@ class UserEnabledCodex(BaseAgent):
         turn0_stdout_parts: list[str] = []
         try:
             for i, exec_input in enumerate(commands):
-                result, timed_out = await exec_with_budget(
-                    environment, exec_input, start_time=self._start_time,
-                )
+                result, timed_out = await exec_with_quota_wait(self, environment, exec_input)
                 if result.stdout:
                     self._cumulative_output.append(result.stdout)
                     turn0_stdout_parts.append(result.stdout)
@@ -663,9 +661,7 @@ class UserEnabledCodex(BaseAgent):
             turn_stdout_parts: list[str] = []
             try:
                 for j, exec_input in enumerate(rerun_commands):
-                    result, timed_out = await exec_with_budget(
-                        environment, exec_input, start_time=self._start_time,
-                    )
+                    result, timed_out = await exec_with_quota_wait(self, environment, exec_input)
                     if result.stdout:
                         self._cumulative_output.append(result.stdout)
                         turn_stdout_parts.append(result.stdout)

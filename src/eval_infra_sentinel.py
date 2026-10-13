@@ -402,6 +402,10 @@ def _detect_empty_transcript(sig: TrialSignals) -> tuple[bool, str, dict[str, An
 
 
 def _detect_no_agent_progress(sig: TrialSignals) -> tuple[bool, str, dict[str, Any]]:
+    # [metaharness] disabled: the router's ask/plan modes tell the agent not to modify files, so a long conversation with
+    # zero edits is a legitimate outcome of that routing, not an infrastructure failure. Such trials are kept and
+    # scored (empty patch -> 0.0 by the judge-stage rule); the report counts them separately.
+    return False, "", {}
     if sig.patch_bytes > EMPTY_PATCH_BYTES:
         return False, "", {}
     if sig.edit_tool_calls > 0:

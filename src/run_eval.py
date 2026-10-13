@@ -159,7 +159,11 @@ def _classify_trial_dirs(task_name: str, trials_dir: Path) -> tuple[bool, list[P
             incomplete.append(d)
             continue
         vr = result.get("verifier_result")
-        if not (vr and vr.get("rewards")):
+        # [local-docker] Harbor's own verifier (test.sh) cannot run on some images (non-root); the metric
+        # is the judge, so a trial whose only failure is the missing reward file still counts as completed.
+        exc = result.get("exception_info")
+        verifier_only = isinstance(exc, dict) and exc.get("exception_type") == "RewardFileNotFoundError"
+        if not (vr and vr.get("rewards")) and not verifier_only:
             incomplete.append(d)
             continue
         verdict = classify_or_load(d)
@@ -495,6 +499,13 @@ def build_trial_config(
         # before any API call is made.
         "version": "2.1.108",
     }
+    # [local-run] SWT_CC_VERSION=latest installs the newest Claude Code instead of the pinned 2.1.108
+    # (the pin predates current model names); any other value pins that version.
+    if os.environ.get("SWT_CC_VERSION"):
+        if os.environ["SWT_CC_VERSION"] == "latest":
+            user_sim_kwargs.pop("version")
+        else:
+            user_sim_kwargs["version"] = os.environ["SWT_CC_VERSION"]
     # Only forwarded when it differs from the wrappers' own default, so trial
     # configs of existing cohorts are unchanged. None = omit temperature (some
     # models, e.g. GPT-5.6, reject the field outright).
@@ -529,6 +540,11 @@ def build_trial_config(
         # `Codex.install()` as `npm install -g @openai/codex@2.1.108` (npm
         # ETARGET — that version doesn't exist).
         user_sim_kwargs.pop("version", None)
+        # [local-run] SWT_CODEX_VERSION (npm tag/version, e.g. latest) and SWT_CODEX_EFFORT (default medium) override the wrapper's defaults
+        if os.environ.get("SWT_CODEX_VERSION"):
+            user_sim_kwargs["codex_version"] = os.environ["SWT_CODEX_VERSION"]
+        if os.environ.get("SWT_CODEX_EFFORT"):
+            user_sim_kwargs["reasoning_effort"] = os.environ["SWT_CODEX_EFFORT"]
         # Strip claude_code-only env vars but KEEP codex-relevant ones
         codex_env = {
             k: v for k, v in agent_env.items()
@@ -654,7 +670,9 @@ def build_trial_config(
         env=agent_env_final,
     )
 
-    env_config = EnvironmentConfig(delete=True, force_build=force_build)
+    # [local-run] SWT_KEEP_IMAGES=1: keep each task image after its trial. Two runs share the same 109 images, and Harbor's
+    # `down --rmi all` would delete an image the other run still needs (the daemon cannot pull it again by itself).
+    env_config = EnvironmentConfig(delete=os.environ.get("SWT_KEEP_IMAGES") != "1", force_build=force_build)
     if env_type == "enroot":
         # Not in Harbor's factory map; loaded by import path from src/. kwargs are
         # forwarded verbatim to EnrootEnvironment.__init__.

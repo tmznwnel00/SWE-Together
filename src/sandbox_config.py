@@ -25,9 +25,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SANDBOXES: tuple[str, ...] = ("e2b", "docker", "enroot")
 DEFAULT_SANDBOX = "e2b"
 
-#: The judge needs a fresh container per trial; Docker's compose-based backend in
-#: Harbor has no equivalent here, so a docker Stage 1 still judges on E2B.
-JUDGE_SANDBOXES: tuple[str, ...] = ("e2b", "enroot")
+#: The judge needs a fresh container per trial; docker uses a plain `docker run`
+#: of the task image (eval/correctness/judge_sandbox.py:DockerJudgeSandbox).
+JUDGE_SANDBOXES: tuple[str, ...] = ("e2b", "docker", "enroot")
 
 
 def load_dotenv(path: Path | None = None) -> None:
@@ -58,12 +58,11 @@ def stage1_sandbox(cli_value: str | None = None) -> str:
 
 
 def judge_sandbox() -> str:
-    """Sandbox for the judge: JUDGE_SANDBOX > SWT_SANDBOX (docker → e2b) > default."""
+    """Sandbox for the judge: JUDGE_SANDBOX > SWT_SANDBOX > default."""
     explicit = os.environ.get("JUDGE_SANDBOX")
     if explicit:
         return _validate(explicit, JUDGE_SANDBOXES, "JUDGE_SANDBOX")
-    top = _validate(os.environ.get("SWT_SANDBOX", DEFAULT_SANDBOX), SANDBOXES, "SWT_SANDBOX")
-    return "e2b" if top == "docker" else top
+    return _validate(os.environ.get("SWT_SANDBOX", DEFAULT_SANDBOX), SANDBOXES, "SWT_SANDBOX")
 
 
 def image_store_root() -> Path:
