@@ -98,6 +98,19 @@ timeout -s INT "$(python3 -c "print(int(float('$HOURS')*3600))")" \
   "$PY" -m metaharness.bench.native_run run --combo claude --tag nat_claude --tasks "$TASKS" --workers "$WORKERS"
 echo "run ended (rc=$?)"
 
+# 5b. A trial can "finish" without the agent having done anything (the benchmark's own audit still says ok). Say so loudly.
+"$PY" - "$BENCH/trials/nat_claude" <<'EOF2'
+import glob, sys
+bad = []
+for d in sorted(glob.glob(sys.argv[1] + "/*__*")):
+    txt = "".join(open(f, errors="replace").read(4000) for f in glob.glob(d + "/agent/command-*/stdout.txt"))
+    if "Permission denied" in txt or "No conversation found" in txt:
+        bad.append(d.rsplit("/", 1)[-1])
+if bad:
+    print("WARNING: these trials hit 'Permission denied' / 'No conversation found' (the agent could not keep its session): " + ", ".join(bad))
+    print("         do NOT use them; delete trials/nat_claude/<trial> before packing.")
+EOF2
+
 # 6. Package what finished and push it, so a local run can continue from here
 "$PY" -m metaharness.bench.native_pack pack --tag nat_claude --out cloud_results/nat_claude
 git add -f cloud_results/nat_claude && git commit -qm "cloud run: nat_claude trials" && git push || echo "push failed: copy cloud_results/nat_claude by hand"

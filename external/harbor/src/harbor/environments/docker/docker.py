@@ -262,6 +262,15 @@ class DockerEnvironment(BaseEnvironment):
             async with lock:
                 await self._run_docker_compose_command(["build"])
 
+        # [local-run] On a Linux host the bind-mounted log dirs belong to the host user (root in a cloud session) while the
+        # task images run as a non-root user: it could not write /logs/agent, so no session files and no tee log were kept
+        # and every `--resume` turn failed ("No conversation found"). Make them writable for any container user.
+        for d in (self.trial_paths.verifier_dir, self.trial_paths.agent_dir, self.trial_paths.artifacts_dir):
+            try:
+                os.chmod(d, 0o777)
+            except OSError:
+                pass
+
         # Remove any stale containers from previous runs with the same session ID.
         try:
             await self._run_docker_compose_command(["down", "--remove-orphans"])
