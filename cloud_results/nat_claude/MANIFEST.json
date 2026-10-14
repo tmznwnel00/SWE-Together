@@ -1,5 +1,33 @@
 {
  "agent-swarm-task-4a881b__NEjqUcJ": {
   "skipped_large_files": []
+ },
+ "agent-swarm-task-ea4bd8__ff6sGCr": {
+  "skipped_large_files": []
+ },
+ "amytis-task-e3714e__xMGUbos": {
+  "skipped_large_files": []
+ },
+ "arr-monitor-add-processes-flag__5fQyeKY": {
+  "skipped_large_files": []
+ },
+ "banodoco-video-perf-optimize__bBh5PB9": {
+  "skipped_large_files": []
+ },
+ "cli-fix-2026-0__sKPsgB9": {
+  "skipped_large_files": []
+ },
+ "cli-task-0ec2e9__7dCmZz7": {
+  "skipped_large_files": [
+   "agent/patches/turn-3.incremental.patch",
+   "agent/patches/turn-4.incremental.patch",
+   "agent/patches/turn-5.incremental.patch"
+  ]
+ },
+ "cli-task-19def0__cZc3qaX": {
+  "skipped_large_files": []
+ },
+ "cli-task-2026-0__6UWFfeF": {
+  "skipped_large_files": []
  }
 }
