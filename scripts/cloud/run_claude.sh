@@ -54,7 +54,8 @@ if [ -f "$CA_SRC" ] || [ -n "$UP" ]; then
   if [ -n "$PROXY_IN_CONTAINER" ]; then
     for v in HTTPS_PROXY HTTP_PROXY https_proxy http_proxy; do echo "      $v: \"$PROXY_IN_CONTAINER\"" >> "$OV"; done
     for v in NO_PROXY no_proxy; do echo "      $v: \"localhost,127.0.0.1\"" >> "$OV"; done
-    echo '      CLAUDE_CODE_PROXY_RESOLVES_HOSTS: "true"' >> "$OV"
+    # host mode: verified with this flag. relay mode: with it the in-container Claude installer died ("Invalid IP address: undefined").
+    [ "$CLOUD_NET" = host ] && echo '      CLAUDE_CODE_PROXY_RESOLVES_HOSTS: "true"' >> "$OV"
   fi
   echo "container network overlay written (CLOUD_NET=$CLOUD_NET, proxy=$([ -n "$UP" ] && echo yes || echo no), CA=$([ -f "$CA_SRC" ] && echo yes || echo no))"
 else
